@@ -1,11 +1,15 @@
 import L from "leaflet";
 import { useEffect } from "react";
 import { MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet";
-import type { Coordinate, RouteOption } from "../types";
+import type { Coordinate } from "../types";
+
+type MapRoute = {
+  geometry: Coordinate[];
+};
 
 type RouteMapProps = {
   origin: Coordinate;
-  route: RouteOption | null;
+  route: MapRoute | null;
   trail?: Coordinate[];
 };
 

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { RouteMap } from "./components/RouteMap";
 import { RunTracker } from "./components/RunTracker";
 import { DEMO_LOCATION, formatDistance, formatDuration } from "./lib/geo";
-import { generateRoutes } from "./lib/routes";
+import { getCurrentUser, loginUser, logoutUser, registerUser } from "./lib/auth";
+import { generateRoutes, loadSavedRoutes, saveRoute } from "./lib/routes";
 import { loadRuns, saveRun } from "./lib/storage";
-import type { Coordinate, LocationState, RouteOption, RunSummary, RunType } from "./types";
+import type { Coordinate, LocationState, RouteOption, RunSummary, RunType, SavedRoute, UserProfile } from "./types";
 
 const DISTANCES = [2, 5, 10] as const;
 const RUN_TYPES: RunType[] = ["Easy", "Recovery", "Tempo", "Long Run"];
@@ -12,6 +13,8 @@ const RUN_TYPES: RunType[] = ["Easy", "Recovery", "Tempo", "Long Run"];
 type View = "plan" | "tracking" | "summary";
 
 function App() {
+  const [authStatus, setAuthStatus] = useState<"loading" | "authenticated" | "guest">("loading");
+  const [user, setUser] = useState<UserProfile | null>(null);
   const [location, setLocation] = useState<LocationState>({
     status: "idle",
     coordinate: null,
@@ -21,7 +24,11 @@ function App() {
   const [runType, setRunType] = useState<RunType>("Easy");
   const [routes, setRoutes] = useState<RouteOption[]>([]);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [savedRoutes, setSavedRoutes] = useState<SavedRoute[]>([]);
+  const [selectedSavedRouteId, setSelectedSavedRouteId] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isSavingRoute, setIsSavingRoute] = useState(false);
+  const [savedRouteError, setSavedRouteError] = useState<string | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
   const [view, setView] = useState<View>("plan");
   const [lastSummary, setLastSummary] = useState<RunSummary | null>(null);
@@ -31,9 +38,61 @@ function App() {
     setRuns(loadRuns());
   }, []);
 
+  useEffect(() => {
+    getCurrentUser()
+      .then((currentUser) => {
+        setUser(currentUser);
+        setAuthStatus(currentUser ? "authenticated" : "guest");
+      })
+      .catch(() => {
+        setUser(null);
+        setAuthStatus("guest");
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setSavedRoutes([]);
+      return;
+    }
+
+    refreshSavedRoutes();
+  }, [user]);
+
   const selectedRoute = useMemo(() => {
     return routes.find((route) => route.id === selectedRouteId) ?? routes[0] ?? null;
   }, [routes, selectedRouteId]);
+
+  const selectedSavedRoute = useMemo(() => {
+    return savedRoutes.find((route) => route.id === selectedSavedRouteId) ?? null;
+  }, [savedRoutes, selectedSavedRouteId]);
+
+  const previewRoute = selectedSavedRoute ?? selectedRoute;
+  const origin = previewRoute?.geometry[0] ?? (location.status === "ready" ? location.coordinate : DEMO_LOCATION);
+
+  async function refreshSavedRoutes() {
+    try {
+      setSavedRouteError(null);
+      setSavedRoutes(await loadSavedRoutes());
+    } catch (error) {
+      setSavedRouteError(error instanceof Error ? error.message : "Saved routes could not be loaded.");
+    }
+  }
+
+  function handleAuthenticated(nextUser: UserProfile) {
+    setUser(nextUser);
+    setAuthStatus("authenticated");
+  }
+
+  async function handleLogout() {
+    await logoutUser().catch(() => undefined);
+    setUser(null);
+    setAuthStatus("guest");
+    setRoutes([]);
+    setSavedRoutes([]);
+    setSelectedRouteId(null);
+    setSelectedSavedRouteId(null);
+  }
 
   function requestLocation() {
     if (!navigator.geolocation) {
@@ -93,6 +152,7 @@ function App() {
     setRouteError(null);
     setRoutes([]);
     setSelectedRouteId(null);
+    setSelectedSavedRouteId(null);
 
     try {
       const generated = await generateRoutes(location.coordinate, distance, runType);
@@ -102,6 +162,25 @@ function App() {
       setRouteError(error instanceof Error ? error.message : "Route generation failed.");
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  async function handleSaveSelectedRoute() {
+    if (!selectedRoute) {
+      return;
+    }
+
+    setIsSavingRoute(true);
+    setSavedRouteError(null);
+
+    try {
+      const saved = await saveRoute(selectedRoute);
+      setSavedRoutes((current) => [saved, ...current]);
+      setSelectedSavedRouteId(saved.id);
+    } catch (error) {
+      setSavedRouteError(error instanceof Error ? error.message : "Route could not be saved.");
+    } finally {
+      setIsSavingRoute(false);
     }
   }
 
@@ -115,7 +194,20 @@ function App() {
     return <RunTracker origin={location.coordinate} route={selectedRoute} onFinish={finishRun} />;
   }
 
-  const origin = location.status === "ready" ? location.coordinate : DEMO_LOCATION;
+  if (authStatus === "loading") {
+    return (
+      <main className="app-shell auth-shell">
+        <div className="panel auth-card">
+          <span className="eyebrow">Michi</span>
+          <h1>Preparing your routes...</h1>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen onAuthenticated={handleAuthenticated} />;
+  }
 
   return (
     <main className="app-shell">
@@ -124,7 +216,15 @@ function App() {
           <span className="eyebrow">Michi</span>
           <h1>Find a real road route for today’s run.</h1>
         </div>
-        <div className="status-pill">{location.status === "ready" ? (location.isDemo ? "Demo start" : "GPS ready") : "Location needed"}</div>
+        <div className="topbar-actions">
+          <div className="status-pill">{location.status === "ready" ? (location.isDemo ? "Demo start" : "GPS ready") : "Location needed"}</div>
+          <div className="profile-pill">
+            <span>{user.fullName ?? user.email}</span>
+            <button className="secondary-button compact-button" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
+        </div>
       </section>
 
       <section className="hero-grid">
@@ -184,7 +284,7 @@ function App() {
         </div>
 
         <div className="map-panel">
-          <RouteMap origin={origin} route={selectedRoute} />
+          <RouteMap origin={origin} route={previewRoute} />
         </div>
       </section>
 
@@ -205,7 +305,10 @@ function App() {
                 <button
                   key={route.id}
                   className={`route-card ${selectedRoute?.id === route.id ? "selected" : ""}`}
-                  onClick={() => setSelectedRouteId(route.id)}
+                  onClick={() => {
+                    setSelectedRouteId(route.id);
+                    setSelectedSavedRouteId(null);
+                  }}
                 >
                   <span>{route.name}</span>
                   <strong>{formatDistance(route.distanceKm)}</strong>
@@ -229,16 +332,28 @@ function App() {
               <button className="primary-button full-width" onClick={() => setView("tracking")}>
                 Start run
               </button>
+              <button className="secondary-button full-width save-route-button" onClick={handleSaveSelectedRoute} disabled={isSavingRoute}>
+                {isSavingRoute ? "Saving..." : "Save route"}
+              </button>
             </div>
           )}
         </div>
 
         <div className="panel dashboard-panel">
           <div className="section-heading">
-            <span className="eyebrow">Dashboard</span>
-            <h2>Local run history</h2>
+            <span className="eyebrow">Library</span>
+            <h2>Saved routes</h2>
           </div>
-          <Dashboard runs={runs} />
+          <SavedRoutesPanel
+            routes={savedRoutes}
+            selectedRouteId={selectedSavedRouteId}
+            error={savedRouteError}
+            onSelect={(routeId) => {
+              setSelectedSavedRouteId(routeId);
+              setSelectedRouteId(null);
+            }}
+            onRefresh={refreshSavedRoutes}
+          />
         </div>
       </section>
 
@@ -262,28 +377,120 @@ function App() {
   );
 }
 
-function Dashboard({ runs }: { runs: RunSummary[] }) {
-  const totalKm = runs.reduce((sum, run) => sum + run.distanceKm, 0);
+function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: UserProfile) => void }) {
+  const [mode, setMode] = useState<"signup" | "login">("signup");
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (!runs.length) {
-    return <p className="muted">Finished runs will appear here. Everything stays in this browser for the MVP.</p>;
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      const nextUser =
+        mode === "signup"
+          ? await registerUser({ fullName, email, password })
+          : await loginUser({ email, password });
+      onAuthenticated(nextUser);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Authentication failed.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="app-shell auth-shell">
+      <div className="panel auth-card">
+        <span className="eyebrow">Michi</span>
+        <h1>{mode === "signup" ? "Create your running route account." : "Welcome back to Michi."}</h1>
+        <form className="auth-form" onSubmit={handleSubmit}>
+          {mode === "signup" && (
+            <label>
+              Full name
+              <input value={fullName} onChange={(event) => setFullName(event.target.value)} autoComplete="name" />
+            </label>
+          )}
+          <label>
+            Email
+            <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" />
+          </label>
+          <label>
+            Password
+            <input
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              type="password"
+              autoComplete={mode === "signup" ? "new-password" : "current-password"}
+            />
+          </label>
+          {error && <div className="error-box">{error}</div>}
+          <button className="generate-button" disabled={isSubmitting}>
+            {isSubmitting ? "Please wait..." : mode === "signup" ? "Sign up" : "Log in"}
+          </button>
+        </form>
+        <button className="auth-switch" onClick={() => setMode((value) => (value === "signup" ? "login" : "signup"))}>
+          {mode === "signup" ? "Already have an account? Log in" : "New here? Create an account"}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+function SavedRoutesPanel({
+  routes,
+  selectedRouteId,
+  error,
+  onSelect,
+  onRefresh
+}: {
+  routes: SavedRoute[];
+  selectedRouteId: string | null;
+  error: string | null;
+  onSelect: (routeId: string) => void;
+  onRefresh: () => void;
+}) {
+  const totalKm = routes.reduce((sum, route) => sum + route.distanceKm, 0);
+
+  if (error) {
+    return (
+      <>
+        <div className="error-box">{error}</div>
+        <button className="secondary-button full-width retry-button" onClick={onRefresh}>
+          Retry
+        </button>
+      </>
+    );
+  }
+
+  if (!routes.length) {
+    return <p className="muted">Saved routes will appear here after you choose one from the generated options.</p>;
   }
 
   return (
     <>
       <div className="metric-row">
-        <Metric label="Runs" value={String(runs.length)} />
+        <Metric label="Routes" value={String(routes.length)} />
         <Metric label="Distance" value={formatDistance(totalKm)} />
+        <Metric label="Latest" value={new Date(routes[0].createdAt).toLocaleDateString()} />
       </div>
       <div className="history-list">
-        {runs.slice(0, 5).map((run) => (
-          <div key={run.id} className="history-item">
+        {routes.slice(0, 6).map((route) => (
+          <button
+            key={route.id}
+            className={`saved-route-item ${selectedRouteId === route.id ? "selected" : ""}`}
+            onClick={() => onSelect(route.id)}
+          >
             <div>
-              <strong>{run.routeName}</strong>
-              <span>{new Date(run.completedAt).toLocaleDateString()}</span>
+              <strong>{route.name}</strong>
+              <span>{formatDuration(route.durationMinutes)} · score {route.score}</span>
             </div>
-            <span>{formatDistance(run.distanceKm)}</span>
-          </div>
+            <span>{formatDistance(route.distanceKm)}</span>
+          </button>
         ))}
       </div>
     </>

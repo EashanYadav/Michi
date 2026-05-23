@@ -15,6 +15,26 @@ export type RouteOption = {
   targetDistanceKm: 2 | 5 | 10;
   runType: RunType;
   notes: string[];
+  geojson?: unknown;
+};
+
+export type SavedRoute = {
+  id: string;
+  name: string;
+  distanceKm: number;
+  durationMinutes: number;
+  score: number;
+  geometry: Coordinate[];
+  geojson?: unknown;
+  createdAt: string;
+};
+
+export type UserProfile = {
+  id: string;
+  fullName: string | null;
+  email: string;
+  profileImage: string | null;
+  authProvider: string | null;
 };
 
 export type RunSummary = {
