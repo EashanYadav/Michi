@@ -3,7 +3,6 @@
 ## In Progress
 
 
-
 ## Next
 
 - Add `.env.example` placeholders for `DATABASE_URL` and `COOKIE_SECRET`
@@ -13,7 +12,8 @@
 
 ## Completed
 
-- feature-1 - Learn and verify Email Auth + Saved Routes implementation
+- feature-1 - Learn and verify Email Auth + Saved Routes implementation.
+- task-1 - Learn TanStack Query server-state patterns.
 
 ## Backlog
 

@@ -1,3 +1,4 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { RouteMap } from "./components/RouteMap";
 import { RunTracker } from "./components/RunTracker";
@@ -9,12 +10,18 @@ import type { Coordinate, LocationState, RouteOption, RunSummary, RunType, Saved
 
 const DISTANCES = [2, 5, 10] as const;
 const RUN_TYPES: RunType[] = ["Easy", "Recovery", "Tempo", "Long Run"];
+const CURRENT_USER_QUERY_KEY = ["current-user"] as const;
+const SAVED_ROUTES_QUERY_KEY = ["saved-routes"] as const;
 
 type View = "plan" | "tracking" | "summary";
 
 function App() {
-  const [authStatus, setAuthStatus] = useState<"loading" | "authenticated" | "guest">("loading");
-  const [user, setUser] = useState<UserProfile | null>(null);
+  const queryClient = useQueryClient();
+  const currentUserQuery = useQuery({
+    queryKey: CURRENT_USER_QUERY_KEY,
+    queryFn: getCurrentUser
+  });
+  const user = currentUserQuery.data ?? null;
   const [location, setLocation] = useState<LocationState>({
     status: "idle",
     coordinate: null,
@@ -22,42 +29,54 @@ function App() {
   });
   const [distance, setDistance] = useState<(typeof DISTANCES)[number]>(5);
   const [runType, setRunType] = useState<RunType>("Easy");
-  const [routes, setRoutes] = useState<RouteOption[]>([]);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
-  const [savedRoutes, setSavedRoutes] = useState<SavedRoute[]>([]);
   const [selectedSavedRouteId, setSelectedSavedRouteId] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isSavingRoute, setIsSavingRoute] = useState(false);
-  const [savedRouteError, setSavedRouteError] = useState<string | null>(null);
-  const [routeError, setRouteError] = useState<string | null>(null);
+  const [routeValidationError, setRouteValidationError] = useState<string | null>(null);
   const [view, setView] = useState<View>("plan");
   const [lastSummary, setLastSummary] = useState<RunSummary | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
+
+  const savedRoutesQuery = useQuery({
+    queryKey: SAVED_ROUTES_QUERY_KEY,
+    queryFn: loadSavedRoutes,
+    enabled: Boolean(user)
+  });
+
+  const generateRoutesMutation = useMutation({
+    mutationFn: (input: { origin: Coordinate; targetDistanceKm: 2 | 5 | 10; runType: RunType }) =>
+      generateRoutes(input.origin, input.targetDistanceKm, input.runType),
+    onSuccess: (generated) => {
+      setSelectedRouteId(generated[0]?.id ?? null);
+      setSelectedSavedRouteId(null);
+    }
+  });
+
+  const saveRouteMutation = useMutation({
+    mutationFn: saveRoute,
+    onSuccess: (saved) => {
+      queryClient.setQueryData<SavedRoute[]>(SAVED_ROUTES_QUERY_KEY, (current = []) => [saved, ...current]);
+      setSelectedSavedRouteId(saved.id);
+      void queryClient.invalidateQueries({ queryKey: SAVED_ROUTES_QUERY_KEY });
+    }
+  });
+
+  const logoutMutation = useMutation({
+    mutationFn: logoutUser,
+    onSettled: () => {
+      queryClient.setQueryData(CURRENT_USER_QUERY_KEY, null);
+      queryClient.removeQueries({ queryKey: SAVED_ROUTES_QUERY_KEY });
+      generateRoutesMutation.reset();
+      setSelectedRouteId(null);
+      setSelectedSavedRouteId(null);
+    }
+  });
 
   useEffect(() => {
     setRuns(loadRuns());
   }, []);
 
-  useEffect(() => {
-    getCurrentUser()
-      .then((currentUser) => {
-        setUser(currentUser);
-        setAuthStatus(currentUser ? "authenticated" : "guest");
-      })
-      .catch(() => {
-        setUser(null);
-        setAuthStatus("guest");
-      });
-  }, []);
-
-  useEffect(() => {
-    if (!user) {
-      setSavedRoutes([]);
-      return;
-    }
-
-    refreshSavedRoutes();
-  }, [user]);
+  const routes = generateRoutesMutation.data ?? [];
+  const savedRoutes = savedRoutesQuery.data ?? [];
 
   const selectedRoute = useMemo(() => {
     return routes.find((route) => route.id === selectedRouteId) ?? routes[0] ?? null;
@@ -70,28 +89,12 @@ function App() {
   const previewRoute = selectedSavedRoute ?? selectedRoute;
   const origin = previewRoute?.geometry[0] ?? (location.status === "ready" ? location.coordinate : DEMO_LOCATION);
 
-  async function refreshSavedRoutes() {
-    try {
-      setSavedRouteError(null);
-      setSavedRoutes(await loadSavedRoutes());
-    } catch (error) {
-      setSavedRouteError(error instanceof Error ? error.message : "Saved routes could not be loaded.");
-    }
-  }
-
   function handleAuthenticated(nextUser: UserProfile) {
-    setUser(nextUser);
-    setAuthStatus("authenticated");
+    queryClient.setQueryData(CURRENT_USER_QUERY_KEY, nextUser);
   }
 
-  async function handleLogout() {
-    await logoutUser().catch(() => undefined);
-    setUser(null);
-    setAuthStatus("guest");
-    setRoutes([]);
-    setSavedRoutes([]);
-    setSelectedRouteId(null);
-    setSelectedSavedRouteId(null);
+  function handleLogout() {
+    logoutMutation.mutate();
   }
 
   function requestLocation() {
@@ -144,44 +147,23 @@ function App() {
 
   async function handleGenerateRoutes() {
     if (location.status !== "ready") {
-      setRouteError("Choose your current location or demo mode before generating a route.");
+      setRouteValidationError("Choose your current location or demo mode before generating a route.");
       return;
     }
 
-    setIsGenerating(true);
-    setRouteError(null);
-    setRoutes([]);
+    setRouteValidationError(null);
+    generateRoutesMutation.reset();
     setSelectedRouteId(null);
     setSelectedSavedRouteId(null);
-
-    try {
-      const generated = await generateRoutes(location.coordinate, distance, runType);
-      setRoutes(generated);
-      setSelectedRouteId(generated[0]?.id ?? null);
-    } catch (error) {
-      setRouteError(error instanceof Error ? error.message : "Route generation failed.");
-    } finally {
-      setIsGenerating(false);
-    }
+    generateRoutesMutation.mutate({ origin: location.coordinate, targetDistanceKm: distance, runType });
   }
 
-  async function handleSaveSelectedRoute() {
+  function handleSaveSelectedRoute() {
     if (!selectedRoute) {
       return;
     }
 
-    setIsSavingRoute(true);
-    setSavedRouteError(null);
-
-    try {
-      const saved = await saveRoute(selectedRoute);
-      setSavedRoutes((current) => [saved, ...current]);
-      setSelectedSavedRouteId(saved.id);
-    } catch (error) {
-      setSavedRouteError(error instanceof Error ? error.message : "Route could not be saved.");
-    } finally {
-      setIsSavingRoute(false);
-    }
+    saveRouteMutation.mutate(selectedRoute);
   }
 
   function finishRun(summary: RunSummary) {
@@ -194,7 +176,7 @@ function App() {
     return <RunTracker origin={location.coordinate} route={selectedRoute} onFinish={finishRun} />;
   }
 
-  if (authStatus === "loading") {
+  if (currentUserQuery.isLoading) {
     return (
       <main className="app-shell auth-shell">
         <div className="panel auth-card">
@@ -220,8 +202,8 @@ function App() {
           <div className="status-pill">{location.status === "ready" ? (location.isDemo ? "Demo start" : "GPS ready") : "Location needed"}</div>
           <div className="profile-pill">
             <span>{user.fullName ?? user.email}</span>
-            <button className="secondary-button compact-button" onClick={handleLogout}>
-              Logout
+            <button className="secondary-button compact-button" onClick={handleLogout} disabled={logoutMutation.isPending}>
+              {logoutMutation.isPending ? "Logging out" : "Logout"}
             </button>
           </div>
         </div>
@@ -276,11 +258,16 @@ function App() {
             </div>
           </div>
 
-          <button className="generate-button" onClick={handleGenerateRoutes} disabled={isGenerating}>
-            {isGenerating ? "Finding real routes..." : "Generate road routes"}
+          <button className="generate-button" onClick={handleGenerateRoutes} disabled={generateRoutesMutation.isPending}>
+            {generateRoutesMutation.isPending ? "Finding real routes..." : "Generate road routes"}
           </button>
 
-          {routeError && <div className="error-box">{routeError}</div>}
+          {(routeValidationError || generateRoutesMutation.error) && (
+            <div className="error-box">
+              {routeValidationError ??
+                (generateRoutesMutation.error instanceof Error ? generateRoutesMutation.error.message : "Route generation failed.")}
+            </div>
+          )}
         </div>
 
         <div className="map-panel">
@@ -332,9 +319,14 @@ function App() {
               <button className="primary-button full-width" onClick={() => setView("tracking")}>
                 Start run
               </button>
-              <button className="secondary-button full-width save-route-button" onClick={handleSaveSelectedRoute} disabled={isSavingRoute}>
-                {isSavingRoute ? "Saving..." : "Save route"}
+              <button className="secondary-button full-width save-route-button" onClick={handleSaveSelectedRoute} disabled={saveRouteMutation.isPending}>
+                {saveRouteMutation.isPending ? "Saving..." : "Save route"}
               </button>
+              {saveRouteMutation.error && (
+                <div className="error-box">
+                  {saveRouteMutation.error instanceof Error ? saveRouteMutation.error.message : "Route could not be saved."}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -347,12 +339,15 @@ function App() {
           <SavedRoutesPanel
             routes={savedRoutes}
             selectedRouteId={selectedSavedRouteId}
-            error={savedRouteError}
+            error={savedRoutesQuery.error instanceof Error ? savedRoutesQuery.error.message : null}
+            isLoading={savedRoutesQuery.isLoading}
             onSelect={(routeId) => {
               setSelectedSavedRouteId(routeId);
               setSelectedRouteId(null);
             }}
-            onRefresh={refreshSavedRoutes}
+            onRefresh={() => {
+              void savedRoutesQuery.refetch();
+            }}
           />
         </div>
       </section>
@@ -382,25 +377,28 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: UserProfile) 
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const registerMutation = useMutation({
+    mutationFn: registerUser,
+    onSuccess: onAuthenticated
+  });
+
+  const loginMutation = useMutation({
+    mutationFn: loginUser,
+    onSuccess: onAuthenticated
+  });
+
+  const activeMutation = mode === "signup" ? registerMutation : loginMutation;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setIsSubmitting(true);
-    setError(null);
 
-    try {
-      const nextUser =
-        mode === "signup"
-          ? await registerUser({ fullName, email, password })
-          : await loginUser({ email, password });
-      onAuthenticated(nextUser);
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Authentication failed.");
-    } finally {
-      setIsSubmitting(false);
+    if (mode === "signup") {
+      registerMutation.mutate({ fullName, email, password });
+      return;
     }
+
+    loginMutation.mutate({ email, password });
   }
 
   return (
@@ -428,12 +426,23 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: UserProfile) 
               autoComplete={mode === "signup" ? "new-password" : "current-password"}
             />
           </label>
-          {error && <div className="error-box">{error}</div>}
-          <button className="generate-button" disabled={isSubmitting}>
-            {isSubmitting ? "Please wait..." : mode === "signup" ? "Sign up" : "Log in"}
+          {activeMutation.error && (
+            <div className="error-box">
+              {activeMutation.error instanceof Error ? activeMutation.error.message : "Authentication failed."}
+            </div>
+          )}
+          <button className="generate-button" disabled={activeMutation.isPending}>
+            {activeMutation.isPending ? "Please wait..." : mode === "signup" ? "Sign up" : "Log in"}
           </button>
         </form>
-        <button className="auth-switch" onClick={() => setMode((value) => (value === "signup" ? "login" : "signup"))}>
+        <button
+          className="auth-switch"
+          onClick={() => {
+            registerMutation.reset();
+            loginMutation.reset();
+            setMode((value) => (value === "signup" ? "login" : "signup"));
+          }}
+        >
           {mode === "signup" ? "Already have an account? Log in" : "New here? Create an account"}
         </button>
       </div>
@@ -445,16 +454,22 @@ function SavedRoutesPanel({
   routes,
   selectedRouteId,
   error,
+  isLoading,
   onSelect,
   onRefresh
 }: {
   routes: SavedRoute[];
   selectedRouteId: string | null;
   error: string | null;
+  isLoading: boolean;
   onSelect: (routeId: string) => void;
   onRefresh: () => void;
 }) {
   const totalKm = routes.reduce((sum, route) => sum + route.distanceKm, 0);
+
+  if (isLoading) {
+    return <p className="muted">Loading your saved routes...</p>;
+  }
 
   if (error) {
     return (
