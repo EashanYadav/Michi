@@ -1,6 +1,11 @@
+import bcrypt from "bcryptjs";
+import cookieParser from "cookie-parser";
 import cors from "cors";
+import { desc, eq } from "drizzle-orm";
 import "dotenv/config";
-import express from "express";
+import express, { type Request, type Response } from "express";
+import { db } from "./db";
+import { routes, users, type SavedRoute, type User } from "./schema";
 
 type Coordinate = {
   lat: number;
@@ -23,6 +28,7 @@ type CandidateRoute = {
   targetDistanceKm: number;
   runType: GenerateRoutesRequest["runType"];
   notes: string[];
+  geojson: unknown;
 };
 
 type OrsFeatureCollection = {
@@ -42,11 +48,107 @@ type OrsFeatureCollection = {
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
 const orsApiKey = process.env.OPENROUTESERVICE_API_KEY;
+const cookieSecret = process.env.COOKIE_SECRET ?? "michi-dev-cookie-secret";
+const isProduction = process.env.NODE_ENV === "production";
 
-app.use(cors());
+if (!process.env.COOKIE_SECRET) {
+  console.warn("COOKIE_SECRET is not configured. Using a development-only fallback secret.");
+}
+
+app.use(cors({ credentials: true, origin: true }));
+app.use(cookieParser(cookieSecret));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (_req, res) => {
+  res.json({ ok: true });
+});
+
+app.post("/api/auth/register", async (req, res) => {
+  const parsed = parseRegisterRequest(req.body);
+
+  if (!parsed.ok) {
+    res.status(400).json({ message: parsed.message });
+    return;
+  }
+
+  try {
+    const existingUser = await findUserByEmail(parsed.value.email);
+
+    if (existingUser) {
+      res.status(409).json({ message: "An account with this email already exists. Log in instead." });
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(parsed.value.password, 12);
+    const [user] = await db
+      .insert(users)
+      .values({
+        fullName: parsed.value.fullName,
+        email: parsed.value.email,
+        passwordHash,
+        authProvider: "email",
+        updatedAt: new Date()
+      })
+      .returning();
+
+    setSessionCookie(res, user.id);
+    res.status(201).json({ user: toSafeUser(user) });
+  } catch (error) {
+    console.error(error);
+    res.status(503).json({ message: "Registration failed while connecting to the database." });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  const parsed = parseLoginRequest(req.body);
+
+  if (!parsed.ok) {
+    res.status(400).json({ message: parsed.message });
+    return;
+  }
+
+  try {
+    const user = await findUserByEmail(parsed.value.email);
+
+    if (!user || !(await bcrypt.compare(parsed.value.password, user.passwordHash))) {
+      res.status(401).json({ message: "Email or password is incorrect." });
+      return;
+    }
+
+    setSessionCookie(res, user.id);
+    res.json({ user: toSafeUser(user) });
+  } catch (error) {
+    console.error(error);
+    res.status(503).json({ message: "Login failed while connecting to the database." });
+  }
+});
+
+app.get("/api/auth/me", async (req, res) => {
+  const userId = getSessionUserId(req);
+
+  if (!userId) {
+    res.status(401).json({ message: "Not logged in." });
+    return;
+  }
+
+  try {
+    const user = await findUserById(userId);
+
+    if (!user) {
+      clearSessionCookie(res);
+      res.status(401).json({ message: "Session expired. Log in again." });
+      return;
+    }
+
+    res.json({ user: toSafeUser(user) });
+  } catch (error) {
+    console.error(error);
+    res.status(503).json({ message: "Session restore failed while connecting to the database." });
+  }
+});
+
+app.post("/api/auth/logout", (_req, res) => {
+  clearSessionCookie(res);
   res.json({ ok: true });
 });
 
@@ -108,6 +210,66 @@ app.post("/api/routes/generate", async (req, res) => {
   }
 });
 
+app.get("/api/routes/saved", async (req, res) => {
+  const userId = requireSession(req, res);
+
+  if (!userId) {
+    return;
+  }
+
+  try {
+    const savedRoutes = await db
+      .select()
+      .from(routes)
+      .where(eq(routes.userId, userId))
+      .orderBy(desc(routes.createdAt));
+
+    res.json({ routes: savedRoutes.map(toSavedRouteResponse) });
+  } catch (error) {
+    console.error(error);
+    res.status(503).json({ message: "Saved routes could not be loaded." });
+  }
+});
+
+app.post("/api/routes/saved", async (req, res) => {
+  const userId = requireSession(req, res);
+
+  if (!userId) {
+    return;
+  }
+
+  const parsed = parseSaveRouteRequest(req.body);
+
+  if (!parsed.ok) {
+    res.status(400).json({ message: parsed.message });
+    return;
+  }
+
+  try {
+    const start = parsed.value.geometry[0];
+    const [savedRoute] = await db
+      .insert(routes)
+      .values({
+        userId,
+        routeName: parsed.value.name,
+        distanceKm: parsed.value.distanceKm.toFixed(2),
+        estimatedDurationMinutes: Math.round(parsed.value.durationMinutes),
+        elevationGainMeters: 0,
+        startLatitude: start.lat.toFixed(8),
+        startLongitude: start.lng.toFixed(8),
+        routeCoordinates: parsed.value.geometry,
+        geojson: parsed.value.geojson ?? null,
+        noveltyScore: parsed.value.score
+      })
+      .returning();
+
+    res.status(201).json({ route: toSavedRouteResponse(savedRoute) });
+  } catch (error) {
+    console.error(error);
+    res.status(503).json({ message: "Route could not be saved." });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Michi route proxy running on http://localhost:${port}`);
 });
@@ -148,6 +310,97 @@ function parseGenerateRoutesRequest(body: unknown):
       origin: input.origin,
       targetDistanceKm: Number(input.targetDistanceKm) as 2 | 5 | 10,
       runType: input.runType as GenerateRoutesRequest["runType"]
+    }
+  };
+}
+
+function parseRegisterRequest(body: unknown):
+  | { ok: true; value: { fullName: string; email: string; password: string } }
+  | { ok: false; message: string } {
+  if (!body || typeof body !== "object") {
+    return { ok: false, message: "Request body is required." };
+  }
+
+  const input = body as Partial<{ fullName: string; email: string; password: string }>;
+  const fullName = String(input.fullName ?? "").trim();
+  const email = normalizeEmail(input.email);
+  const password = String(input.password ?? "");
+
+  if (fullName.length < 2) {
+    return { ok: false, message: "Full name must be at least 2 characters." };
+  }
+
+  if (!isValidEmail(email)) {
+    return { ok: false, message: "Enter a valid email address." };
+  }
+
+  if (password.length < 8) {
+    return { ok: false, message: "Password must be at least 8 characters." };
+  }
+
+  return { ok: true, value: { fullName, email, password } };
+}
+
+function parseLoginRequest(body: unknown):
+  | { ok: true; value: { email: string; password: string } }
+  | { ok: false; message: string } {
+  if (!body || typeof body !== "object") {
+    return { ok: false, message: "Request body is required." };
+  }
+
+  const input = body as Partial<{ email: string; password: string }>;
+  const email = normalizeEmail(input.email);
+  const password = String(input.password ?? "");
+
+  if (!isValidEmail(email) || !password) {
+    return { ok: false, message: "Email and password are required." };
+  }
+
+  return { ok: true, value: { email, password } };
+}
+
+function parseSaveRouteRequest(body: unknown):
+  | { ok: true; value: CandidateRoute }
+  | { ok: false; message: string } {
+  if (!body || typeof body !== "object") {
+    return { ok: false, message: "Request body is required." };
+  }
+
+  const input = body as Partial<CandidateRoute>;
+
+  if (!input.name || typeof input.name !== "string") {
+    return { ok: false, message: "Route name is required." };
+  }
+
+  if (!Number.isFinite(input.distanceKm) || Number(input.distanceKm) <= 0) {
+    return { ok: false, message: "A valid route distance is required." };
+  }
+
+  if (!Number.isFinite(input.durationMinutes) || Number(input.durationMinutes) <= 0) {
+    return { ok: false, message: "A valid route duration is required." };
+  }
+
+  if (!Number.isFinite(input.score)) {
+    return { ok: false, message: "A valid route score is required." };
+  }
+
+  if (!Array.isArray(input.geometry) || input.geometry.length < 2 || !input.geometry.every(isFiniteCoordinate)) {
+    return { ok: false, message: "Route coordinates are required." };
+  }
+
+  return {
+    ok: true,
+    value: {
+      id: String(input.id ?? crypto.randomUUID()),
+      name: input.name.trim(),
+      distanceKm: Number(input.distanceKm),
+      durationMinutes: Number(input.durationMinutes),
+      score: Math.round(Number(input.score)),
+      geometry: input.geometry,
+      targetDistanceKm: Number(input.targetDistanceKm ?? input.distanceKm),
+      runType: input.runType ?? "Easy",
+      notes: Array.isArray(input.notes) ? input.notes : [],
+      geojson: input.geojson ?? null
     }
   };
 }
@@ -250,8 +503,91 @@ async function fetchRoadRoute(
       "Road-following route from OpenRouteService",
       `Within ${Math.round(distanceErrorRatio * 100)}% of your target distance`,
       "Starts and finishes near your current location"
-    ]
+    ],
+    geojson: feature
   };
+}
+
+async function findUserByEmail(email: string): Promise<User | undefined> {
+  const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  return user;
+}
+
+async function findUserById(id: string): Promise<User | undefined> {
+  const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  return user;
+}
+
+function setSessionCookie(res: Response, userId: string) {
+  res.cookie("michi_session", userId, {
+    httpOnly: true,
+    signed: true,
+    sameSite: "lax",
+    secure: isProduction,
+    maxAge: 1000 * 60 * 60 * 24 * 30
+  });
+}
+
+function clearSessionCookie(res: Response) {
+  res.clearCookie("michi_session", {
+    httpOnly: true,
+    signed: true,
+    sameSite: "lax",
+    secure: isProduction
+  });
+}
+
+function getSessionUserId(req: Request): string | null {
+  const value = req.signedCookies?.michi_session;
+  return typeof value === "string" && isUuid(value) ? value : null;
+}
+
+function requireSession(req: Request, res: Response): string | null {
+  const userId = getSessionUserId(req);
+
+  if (!userId) {
+    res.status(401).json({ message: "Log in to continue." });
+    return null;
+  }
+
+  return userId;
+}
+
+function toSafeUser(user: User) {
+  return {
+    id: user.id,
+    fullName: user.fullName,
+    email: user.email,
+    profileImage: user.profileImage,
+    authProvider: user.authProvider
+  };
+}
+
+function toSavedRouteResponse(route: SavedRoute) {
+  const geometry = Array.isArray(route.routeCoordinates) ? route.routeCoordinates : [];
+
+  return {
+    id: route.id,
+    name: route.routeName ?? "Saved route",
+    distanceKm: Number(route.distanceKm),
+    durationMinutes: route.estimatedDurationMinutes ?? 0,
+    score: route.noveltyScore ?? 0,
+    geometry,
+    geojson: route.geojson,
+    createdAt: route.createdAt?.toISOString() ?? new Date().toISOString()
+  };
+}
+
+function normalizeEmail(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function haversineMeters(a: Coordinate, b: Coordinate): number {

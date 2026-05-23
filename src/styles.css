@@ -36,6 +36,12 @@ button {
   margin-bottom: 20px;
 }
 
+.topbar-actions {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
 .topbar h1,
 .section-heading h2,
 .tracker-panel h2,
@@ -67,6 +73,18 @@ button {
   background: #ffffff;
   color: #315045;
   font-weight: 700;
+}
+
+.profile-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #d8ded4;
+  border-radius: 8px;
+  padding: 8px;
+  background: #ffffff;
+  color: #315045;
+  font-weight: 800;
 }
 
 .hero-grid,
@@ -165,6 +183,11 @@ button {
     opacity 150ms ease;
 }
 
+.compact-button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
 .primary-button,
 .generate-button {
   background: #146b4f;
@@ -191,6 +214,11 @@ button {
 .full-width,
 .generate-button {
   width: 100%;
+}
+
+.save-route-button,
+.retry-button {
+  margin-top: 10px;
 }
 
 .field-group {
@@ -382,6 +410,84 @@ button {
   color: #65746d;
 }
 
+.saved-route-item {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfa;
+  color: #172820;
+  cursor: pointer;
+  text-align: left;
+}
+
+.saved-route-item.selected {
+  border-color: #146b4f;
+  background: #f0f7f2;
+}
+
+.saved-route-item div {
+  display: grid;
+  gap: 3px;
+}
+
+.saved-route-item span {
+  color: #65746d;
+  font-weight: 700;
+}
+
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+.auth-card {
+  width: min(520px, 100%);
+  padding: 26px;
+}
+
+.auth-card h1 {
+  margin: 6px 0 18px;
+  font-size: clamp(2rem, 8vw, 3.4rem);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 7px;
+  color: #44564e;
+  font-weight: 800;
+}
+
+.auth-form input {
+  min-height: 46px;
+  border: 1px solid #dce4d9;
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #fbfcfa;
+  color: #172820;
+  font: inherit;
+}
+
+.auth-switch {
+  width: 100%;
+  margin-top: 14px;
+  background: transparent;
+  color: #146b4f;
+  cursor: pointer;
+  font-weight: 900;
+}
+
 .tracker-panel {
   align-self: stretch;
 }
@@ -411,6 +517,10 @@ button {
   .topbar {
     display: grid;
   }
+
+  .topbar-actions {
+    justify-items: start;
+  }
 }
 
 @media (max-width: 620px) {
@@ -426,6 +536,11 @@ button {
   .segmented,
   .segmented.run-type {
     grid-template-columns: 1fr;
+  }
+
+  .profile-pill {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .map-panel,
