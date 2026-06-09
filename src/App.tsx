@@ -5,6 +5,7 @@ import { RunTracker } from "./components/RunTracker";
 import { DEMO_LOCATION, formatDistance, formatDuration } from "./lib/geo";
 import { getCurrentUser, loginUser, logoutUser, registerUser } from "./lib/auth";
 import { generateRoutes, loadSavedRoutes, saveRoute } from "./lib/routes";
+import { useOnlineStatus } from "./lib/network";
 import { loadRuns, saveRun } from "./lib/storage";
 import type { Coordinate, LocationState, RouteOption, RunSummary, RunType, SavedRoute, UserProfile } from "./types";
 
@@ -17,9 +18,11 @@ type View = "plan" | "tracking" | "summary";
 
 function App() {
   const queryClient = useQueryClient();
+  const isOnline = useOnlineStatus();
   const currentUserQuery = useQuery({
     queryKey: CURRENT_USER_QUERY_KEY,
-    queryFn: getCurrentUser
+    queryFn: getCurrentUser,
+    enabled: isOnline
   });
   const user = currentUserQuery.data ?? null;
   const [location, setLocation] = useState<LocationState>({
@@ -39,7 +42,7 @@ function App() {
   const savedRoutesQuery = useQuery({
     queryKey: SAVED_ROUTES_QUERY_KEY,
     queryFn: loadSavedRoutes,
-    enabled: Boolean(user)
+    enabled: Boolean(user) && isOnline
   });
 
   const generateRoutesMutation = useMutation({
@@ -151,6 +154,11 @@ function App() {
       return;
     }
 
+    if (!isOnline) {
+      setRouteValidationError("Route generation needs a network connection.");
+      return;
+    }
+
     setRouteValidationError(null);
     generateRoutesMutation.reset();
     setSelectedRouteId(null);
@@ -160,6 +168,10 @@ function App() {
 
   function handleSaveSelectedRoute() {
     if (!selectedRoute) {
+      return;
+    }
+
+    if (!isOnline) {
       return;
     }
 
@@ -176,7 +188,7 @@ function App() {
     return <RunTracker origin={location.coordinate} route={selectedRoute} onFinish={finishRun} />;
   }
 
-  if (currentUserQuery.isLoading) {
+  if (currentUserQuery.isLoading && isOnline) {
     return (
       <main className="app-shell auth-shell">
         <div className="panel auth-card">
@@ -187,12 +199,25 @@ function App() {
     );
   }
 
+  if (!isOnline && !user) {
+    return (
+      <main className="app-shell auth-shell">
+        <div className="panel auth-card">
+          <span className="eyebrow">Michi</span>
+          <h1>Michi is offline.</h1>
+          <p className="muted">Reconnect to restore your session or sign in.</p>
+        </div>
+      </main>
+    );
+  }
+
   if (!user) {
-    return <AuthScreen onAuthenticated={handleAuthenticated} />;
+    return <AuthScreen isOnline={isOnline} onAuthenticated={handleAuthenticated} />;
   }
 
   return (
     <main className="app-shell">
+      {!isOnline && <div className="offline-banner">Offline mode: saved app shell is available, but auth, route generation, and syncing need network.</div>}
       <section className="topbar">
         <div>
           <span className="eyebrow">Michi</span>
@@ -202,7 +227,7 @@ function App() {
           <div className="status-pill">{location.status === "ready" ? (location.isDemo ? "Demo start" : "GPS ready") : "Location needed"}</div>
           <div className="profile-pill">
             <span>{user.fullName ?? user.email}</span>
-            <button className="secondary-button compact-button" onClick={handleLogout} disabled={logoutMutation.isPending}>
+            <button className="secondary-button compact-button" onClick={handleLogout} disabled={logoutMutation.isPending || !isOnline}>
               {logoutMutation.isPending ? "Logging out" : "Logout"}
             </button>
           </div>
@@ -258,13 +283,15 @@ function App() {
             </div>
           </div>
 
-          <button className="generate-button" onClick={handleGenerateRoutes} disabled={generateRoutesMutation.isPending}>
+          <button className="generate-button" onClick={handleGenerateRoutes} disabled={generateRoutesMutation.isPending || !isOnline}>
             {generateRoutesMutation.isPending ? "Finding real routes..." : "Generate road routes"}
           </button>
 
-          {(routeValidationError || generateRoutesMutation.error) && (
+          {(!isOnline || routeValidationError || generateRoutesMutation.error) && (
             <div className="error-box">
-              {routeValidationError ??
+              {!isOnline
+                ? "Route generation needs a network connection."
+                : routeValidationError ??
                 (generateRoutesMutation.error instanceof Error ? generateRoutesMutation.error.message : "Route generation failed.")}
             </div>
           )}
@@ -319,7 +346,7 @@ function App() {
               <button className="primary-button full-width" onClick={() => setView("tracking")}>
                 Start run
               </button>
-              <button className="secondary-button full-width save-route-button" onClick={handleSaveSelectedRoute} disabled={saveRouteMutation.isPending}>
+              <button className="secondary-button full-width save-route-button" onClick={handleSaveSelectedRoute} disabled={saveRouteMutation.isPending || !isOnline}>
                 {saveRouteMutation.isPending ? "Saving..." : "Save route"}
               </button>
               {saveRouteMutation.error && (
@@ -341,6 +368,7 @@ function App() {
             selectedRouteId={selectedSavedRouteId}
             error={savedRoutesQuery.error instanceof Error ? savedRoutesQuery.error.message : null}
             isLoading={savedRoutesQuery.isLoading}
+            isOnline={isOnline}
             onSelect={(routeId) => {
               setSelectedSavedRouteId(routeId);
               setSelectedRouteId(null);
@@ -372,7 +400,7 @@ function App() {
   );
 }
 
-function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: UserProfile) => void }) {
+function AuthScreen({ isOnline, onAuthenticated }: { isOnline: boolean; onAuthenticated: (user: UserProfile) => void }) {
   const [mode, setMode] = useState<"signup" | "login">("signup");
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -393,6 +421,10 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: UserProfile) 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    if (!isOnline) {
+      return;
+    }
+
     if (mode === "signup") {
       registerMutation.mutate({ fullName, email, password });
       return;
@@ -406,6 +438,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: UserProfile) 
       <div className="panel auth-card">
         <span className="eyebrow">Michi</span>
         <h1>{mode === "signup" ? "Create your running route account." : "Welcome back to Michi."}</h1>
+        {!isOnline && <div className="error-box">Signup and login need a network connection.</div>}
         <form className="auth-form" onSubmit={handleSubmit}>
           {mode === "signup" && (
             <label>
@@ -431,7 +464,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: UserProfile) 
               {activeMutation.error instanceof Error ? activeMutation.error.message : "Authentication failed."}
             </div>
           )}
-          <button className="generate-button" disabled={activeMutation.isPending}>
+          <button className="generate-button" disabled={activeMutation.isPending || !isOnline}>
             {activeMutation.isPending ? "Please wait..." : mode === "signup" ? "Sign up" : "Log in"}
           </button>
         </form>
@@ -455,6 +488,7 @@ function SavedRoutesPanel({
   selectedRouteId,
   error,
   isLoading,
+  isOnline,
   onSelect,
   onRefresh
 }: {
@@ -462,6 +496,7 @@ function SavedRoutesPanel({
   selectedRouteId: string | null;
   error: string | null;
   isLoading: boolean;
+  isOnline: boolean;
   onSelect: (routeId: string) => void;
   onRefresh: () => void;
 }) {
@@ -469,6 +504,10 @@ function SavedRoutesPanel({
 
   if (isLoading) {
     return <p className="muted">Loading your saved routes...</p>;
+  }
+
+  if (!isOnline && !routes.length) {
+    return <p className="muted">Saved routes need a network connection the first time they load.</p>;
   }
 
   if (error) {

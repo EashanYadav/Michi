@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Michi">
+  <rect width="512" height="512" rx="112" fill="#146b4f"/>
+  <path d="M130 345V167h47l79 100 79-100h47v178h-54v-94l-58 72h-28l-58-72v94h-54Z" fill="#f6f7f2"/>
+  <path d="M145 387c76 28 146 28 222 0" fill="none" stroke="#ef7b45" stroke-width="28" stroke-linecap="round"/>
+</svg>

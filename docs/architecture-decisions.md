@@ -15,3 +15,7 @@ Phase 1 uses email/password authentication so we can learn auth fundamentals bef
 ## ADR 004: Use TanStack Query For Server State
 
 Michi uses TanStack Query for API-backed state such as the current user, saved routes, route generation, login, logout, and route saving. This separates server state from local UI state and gives us caching, retries, loading states, error states, and invalidation as the product grows.
+
+## ADR 005: Build PWA-First
+
+Michi uses a PWA-first approach so the current React/Vite app can become installable without a native rewrite. The service worker caches the app shell and static assets, while API-backed actions such as auth, route generation, and route saving still require network access.
