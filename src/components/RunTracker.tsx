@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Pause, Play, Square } from "lucide-react";
 import { formatDistance, formatTimer, haversineKm, paceFrom } from "../lib/geo";
 import type { Coordinate, RouteOption, RunSummary } from "../types";
 import { RouteMap } from "./RouteMap";
+import { Button } from "./ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 
 type RunTrackerProps = {
   origin: Coordinate;
@@ -71,36 +74,42 @@ export function RunTracker({ origin, route, onFinish }: RunTrackerProps) {
   }
 
   return (
-    <section className="tracker-grid">
-      <div className="map-panel">
+    <section className="grid min-h-screen gap-4 bg-background p-4 text-foreground lg:grid-cols-[1.5fr_360px]">
+      <div className="overflow-hidden rounded-lg border border-border bg-[#dfe9da] shadow-soft">
         <RouteMap origin={origin} route={route} trail={trail} />
       </div>
-      <aside className="panel tracker-panel">
-        <span className="eyebrow">Live run</span>
-        <h2>{route.name}</h2>
-        <div className="metric-stack">
-          <div>
-            <span>Time</span>
-            <strong>{formatTimer(seconds)}</strong>
+      <Card className="self-stretch">
+        <CardHeader>
+          <p className="text-xs font-medium uppercase tracking-[0.28em] text-muted-foreground">Live run</p>
+          <CardTitle>{route.name}</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="grid gap-3">
+            <TrackerMetric label="Time" value={formatTimer(seconds)} />
+            <TrackerMetric label="Distance" value={formatDistance(coveredKm)} />
+            <TrackerMetric label="Pace" value={paceFrom(coveredKm, seconds)} />
           </div>
-          <div>
-            <span>Distance</span>
-            <strong>{formatDistance(coveredKm)}</strong>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => setIsRunning((value) => !value)}>
+              {isRunning ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+              {isRunning ? "Pause" : "Resume"}
+            </Button>
+            <Button onClick={finishRun}>
+              <Square className="h-4 w-4" />
+              Finish
+            </Button>
           </div>
-          <div>
-            <span>Pace</span>
-            <strong>{paceFrom(coveredKm, seconds)}</strong>
-          </div>
-        </div>
-        <div className="control-row">
-          <button className="secondary-button" onClick={() => setIsRunning((value) => !value)}>
-            {isRunning ? "Pause" : "Resume"}
-          </button>
-          <button className="primary-button" onClick={finishRun}>
-            Finish
-          </button>
-        </div>
-      </aside>
+        </CardContent>
+      </Card>
     </section>
+  );
+}
+
+function TrackerMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{label}</span>
+      <strong className="mt-2 block text-2xl leading-none">{value}</strong>
+    </div>
   );
 }
