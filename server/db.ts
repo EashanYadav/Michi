@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "./schema";
+import fs from "fs";
 
 const { Pool } = pg;
 
@@ -19,7 +20,8 @@ if (!connectionString) {
 export const pool = new Pool({
   connectionString,
   ssl: {
-    rejectUnauthorized: false,
+    ca: fs.readFileSync("/home/Michi/ca.pem", "utf8"),
+    rejectUnauthorized: true,
   },
 });
 
