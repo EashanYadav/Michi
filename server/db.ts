@@ -7,7 +7,9 @@ const { Pool } = pg;
 const connectionString = process.env.DATABASE_URL;
 
 if (!connectionString) {
-  console.warn("DATABASE_URL is not configured. Auth and saved route APIs will return service errors.");
+  console.warn(
+    "DATABASE_URL is not configured. Auth and saved route APIs will return service errors."
+  );
 } else if (connectionString.startsWith("jdbc:")) {
   throw new Error(
     "DATABASE_URL must be a Node/Postgres connection string, not a JDBC URL. Use postgresql://USER:PASSWORD@HOST:PORT/DATABASE instead of jdbc:postgresql://..."
@@ -15,7 +17,10 @@ if (!connectionString) {
 }
 
 export const pool = new Pool({
-  connectionString
+  connectionString,
+  ssl: {
+    rejectUnauthorized: false,
+  },
 });
 
 export const db = drizzle(pool, { schema });
