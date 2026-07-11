@@ -19,10 +19,6 @@ if (!connectionString) {
 
 export const pool = new Pool({
   connectionString,
-  ssl: {
-    ca: fs.readFileSync("/home/Michi/ca.pem", "utf8"),
-    rejectUnauthorized: true,
-  },
 });
 
 export const db = drizzle(pool, { schema });
