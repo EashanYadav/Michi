@@ -28,6 +28,16 @@ PORT=8787
 
 Restart `npm run dev` after adding the key.
 
+## Database Migrations
+
+Apply schema changes with:
+
+```bash
+npm run db:migrate
+```
+
+Migrations live in `migrations/` and are recorded in the `michi.schema_migrations` table.
+
 ## Current MVP
 
 - React + Vite + TypeScript frontend

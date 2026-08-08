@@ -19,3 +19,11 @@ Michi uses TanStack Query for API-backed state such as the current user, saved r
 ## ADR 005: Build PWA-First
 
 Michi uses a PWA-first approach so the current React/Vite app can become installable without a native rewrite. The service worker caches the app shell and static assets, while API-backed actions such as auth, route generation, and route saving still require network access.
+
+## ADR 006: Store Completed Runs In Postgres
+
+Michi stores completed run summaries in Postgres instead of localStorage. This makes run history account-scoped, available across devices, and queryable by the backend for future insights. Live tracking state remains local UI state until the user finishes the run.
+
+## ADR 007: Use SQL Files For Migrations
+
+Michi uses ordered SQL migration files plus a small `pg` runner instead of introducing a migration package immediately. This keeps the learning path close to the database: every schema change is visible as SQL, applied in order, wrapped in a transaction, and recorded in `michi.schema_migrations`.
