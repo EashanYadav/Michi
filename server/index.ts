@@ -5,7 +5,7 @@ import { desc, eq } from "drizzle-orm";
 import "dotenv/config";
 import express, { type Request, type Response } from "express";
 import { db } from "./db";
-import { routes, users, type SavedRoute, type User } from "./schema";
+import { routes, runHistory, users, type RunHistory, type SavedRoute, type User } from "./schema";
 
 type Coordinate = {
   lat: number;
@@ -29,6 +29,16 @@ type CandidateRoute = {
   runType: GenerateRoutesRequest["runType"];
   notes: string[];
   geojson: unknown;
+};
+
+type RunSummaryRequest = {
+  id?: string;
+  routeName: string;
+  distanceKm: number;
+  targetDistanceKm: number;
+  durationSeconds: number;
+  pace: string;
+  completedAt: string;
 };
 
 type OrsFeatureCollection = {
@@ -270,6 +280,63 @@ app.post("/api/routes/saved", async (req, res) => {
   }
 });
 
+app.get("/api/runs", async (req, res) => {
+  const userId = requireSession(req, res);
+
+  if (!userId) {
+    return;
+  }
+
+  try {
+    const runs = await db
+      .select()
+      .from(runHistory)
+      .where(eq(runHistory.userId, userId))
+      .orderBy(desc(runHistory.completedAt))
+      .limit(20);
+
+    res.json({ runs: runs.map(toRunHistoryResponse) });
+  } catch (error) {
+    console.error(error);
+    res.status(503).json({ message: "Run history could not be loaded." });
+  }
+});
+
+app.post("/api/runs", async (req, res) => {
+  const userId = requireSession(req, res);
+
+  if (!userId) {
+    return;
+  }
+
+  const parsed = parseSaveRunRequest(req.body);
+
+  if (!parsed.ok) {
+    res.status(400).json({ message: parsed.message });
+    return;
+  }
+
+  try {
+    const [savedRun] = await db
+      .insert(runHistory)
+      .values({
+        userId,
+        routeName: parsed.value.routeName,
+        distanceKm: parsed.value.distanceKm.toFixed(2),
+        targetDistanceKm: parsed.value.targetDistanceKm.toFixed(2),
+        durationSeconds: Math.round(parsed.value.durationSeconds),
+        pace: parsed.value.pace,
+        completedAt: new Date(parsed.value.completedAt)
+      })
+      .returning();
+
+    res.status(201).json({ run: toRunHistoryResponse(savedRun) });
+  } catch (error) {
+    console.error(error);
+    res.status(503).json({ message: "Run could not be saved." });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Michi route proxy running on http://localhost:${port}`);
 });
@@ -401,6 +468,57 @@ function parseSaveRouteRequest(body: unknown):
       runType: input.runType ?? "Easy",
       notes: Array.isArray(input.notes) ? input.notes : [],
       geojson: input.geojson ?? null
+    }
+  };
+}
+
+function parseSaveRunRequest(body: unknown):
+  | { ok: true; value: RunSummaryRequest }
+  | { ok: false; message: string } {
+  if (!body || typeof body !== "object") {
+    return { ok: false, message: "Request body is required." };
+  }
+
+  const input = body as Partial<RunSummaryRequest>;
+  const routeName = String(input.routeName ?? "").trim();
+  const pace = String(input.pace ?? "").trim();
+  const completedAt = String(input.completedAt ?? "");
+  const completedDate = new Date(completedAt);
+
+  if (routeName.length < 1) {
+    return { ok: false, message: "Route name is required." };
+  }
+
+  if (!Number.isFinite(input.distanceKm) || Number(input.distanceKm) <= 0) {
+    return { ok: false, message: "A valid run distance is required." };
+  }
+
+  if (!Number.isFinite(input.targetDistanceKm) || Number(input.targetDistanceKm) <= 0) {
+    return { ok: false, message: "A valid target distance is required." };
+  }
+
+  if (!Number.isFinite(input.durationSeconds) || Number(input.durationSeconds) < 0) {
+    return { ok: false, message: "A valid run duration is required." };
+  }
+
+  if (!pace) {
+    return { ok: false, message: "Pace is required." };
+  }
+
+  if (Number.isNaN(completedDate.getTime())) {
+    return { ok: false, message: "A valid completion time is required." };
+  }
+
+  return {
+    ok: true,
+    value: {
+      id: typeof input.id === "string" ? input.id : undefined,
+      routeName,
+      distanceKm: Number(input.distanceKm),
+      targetDistanceKm: Number(input.targetDistanceKm),
+      durationSeconds: Math.round(Number(input.durationSeconds)),
+      pace,
+      completedAt: completedDate.toISOString()
     }
   };
 }
@@ -575,6 +693,18 @@ function toSavedRouteResponse(route: SavedRoute) {
     geometry,
     geojson: route.geojson,
     createdAt: route.createdAt?.toISOString() ?? new Date().toISOString()
+  };
+}
+
+function toRunHistoryResponse(run: RunHistory) {
+  return {
+    id: run.id,
+    routeName: run.routeName,
+    distanceKm: Number(run.distanceKm),
+    targetDistanceKm: Number(run.targetDistanceKm),
+    durationSeconds: run.durationSeconds,
+    pace: run.pace,
+    completedAt: run.completedAt.toISOString()
   };
 }
 

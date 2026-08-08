@@ -7,6 +7,7 @@
     "dev": "concurrently \"vite --host 0.0.0.0\" \"tsx watch server/index.ts\"",
     "client": "vite --host 0.0.0.0",
     "server": "tsx watch server/index.ts",
+    "db:migrate": "tsx server/migrate.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "cap:sync": "npm run build && cap sync",

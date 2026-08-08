@@ -21,7 +21,7 @@ import {
   User,
   Zap
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { RouteMap } from "./components/RouteMap";
 import { RunTracker } from "./components/RunTracker";
 import { Button } from "./components/ui/button";
@@ -29,8 +29,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { DEMO_LOCATION, formatDistance, formatDuration } from "./lib/geo";
 import { getCurrentUser, loginUser, logoutUser, registerUser } from "./lib/auth";
 import { generateRoutes, loadSavedRoutes, saveRoute } from "./lib/routes";
+import { loadRuns, saveRun } from "./lib/runs";
 import { useOnlineStatus } from "./lib/network";
-import { loadRuns, saveRun } from "./lib/storage";
 import { cn } from "./lib/utils";
 import type { Coordinate, LocationState, RouteOption, RunSummary, RunType, SavedRoute, UserProfile } from "./types";
 
@@ -38,6 +38,7 @@ const DISTANCES = [2, 5, 10] as const;
 const RUN_TYPES: RunType[] = ["Easy", "Recovery", "Tempo", "Long Run"];
 const CURRENT_USER_QUERY_KEY = ["current-user"] as const;
 const SAVED_ROUTES_QUERY_KEY = ["saved-routes"] as const;
+const RUNS_QUERY_KEY = ["runs"] as const;
 
 type View = "plan" | "tracking" | "summary";
 
@@ -78,11 +79,16 @@ function App() {
   const [routeValidationError, setRouteValidationError] = useState<string | null>(null);
   const [view, setView] = useState<View>("plan");
   const [lastSummary, setLastSummary] = useState<RunSummary | null>(null);
-  const [runs, setRuns] = useState<RunSummary[]>([]);
 
   const savedRoutesQuery = useQuery({
     queryKey: SAVED_ROUTES_QUERY_KEY,
     queryFn: loadSavedRoutes,
+    enabled: Boolean(user) && isOnline
+  });
+
+  const runsQuery = useQuery({
+    queryKey: RUNS_QUERY_KEY,
+    queryFn: loadRuns,
     enabled: Boolean(user) && isOnline
   });
 
@@ -104,23 +110,32 @@ function App() {
     }
   });
 
+  const saveRunMutation = useMutation({
+    mutationFn: saveRun,
+    onSuccess: (saved) => {
+      queryClient.setQueryData<RunSummary[]>(RUNS_QUERY_KEY, (current = []) => [
+        saved,
+        ...current.filter((run) => run.id !== saved.id)
+      ].slice(0, 20));
+      void queryClient.invalidateQueries({ queryKey: RUNS_QUERY_KEY });
+    }
+  });
+
   const logoutMutation = useMutation({
     mutationFn: logoutUser,
     onSettled: () => {
       queryClient.setQueryData(CURRENT_USER_QUERY_KEY, null);
       queryClient.removeQueries({ queryKey: SAVED_ROUTES_QUERY_KEY });
+      queryClient.removeQueries({ queryKey: RUNS_QUERY_KEY });
       generateRoutesMutation.reset();
       setSelectedRouteId(null);
       setSelectedSavedRouteId(null);
     }
   });
 
-  useEffect(() => {
-    setRuns(loadRuns());
-  }, []);
-
   const routes = generateRoutesMutation.data ?? [];
   const savedRoutes = savedRoutesQuery.data ?? [];
+  const runs = runsQuery.data ?? [];
 
   const selectedRoute = useMemo(() => {
     return routes.find((route) => route.id === selectedRouteId) ?? routes[0] ?? null;
@@ -219,7 +234,8 @@ function App() {
 
   function finishRun(summary: RunSummary) {
     setLastSummary(summary);
-    setRuns(saveRun(summary));
+    queryClient.setQueryData<RunSummary[]>(RUNS_QUERY_KEY, (current = []) => [summary, ...current].slice(0, 20));
+    saveRunMutation.mutate(summary);
     setView("summary");
   }
 
@@ -391,7 +407,14 @@ function App() {
                   void savedRoutesQuery.refetch();
                 }}
               />
-              <DashboardPanel totalSavedKm={totalSavedKm} savedRoutes={savedRoutes} runs={runs} latestRun={latestRun} />
+              <DashboardPanel
+                totalSavedKm={totalSavedKm}
+                savedRoutes={savedRoutes}
+                runs={runs}
+                latestRun={latestRun}
+                runHistoryError={runsQuery.error instanceof Error ? runsQuery.error.message : null}
+                saveRunError={saveRunMutation.error instanceof Error ? saveRunMutation.error.message : null}
+              />
             </section>
           </div>
         </section>
@@ -716,12 +739,16 @@ function DashboardPanel({
   totalSavedKm,
   savedRoutes,
   runs,
-  latestRun
+  latestRun,
+  runHistoryError,
+  saveRunError
 }: {
   totalSavedKm: number;
   savedRoutes: SavedRoute[];
   runs: RunSummary[];
   latestRun: RunSummary | null;
+  runHistoryError: string | null;
+  saveRunError: string | null;
 }) {
   return (
     <Card>
@@ -733,6 +760,11 @@ function DashboardPanel({
         <Metric icon={Library} label="Saved routes" value={String(savedRoutes.length)} />
         <Metric icon={Route} label="Library distance" value={formatDistance(totalSavedKm)} />
         <Metric icon={Timer} label="Recorded runs" value={String(runs.length)} />
+        {(runHistoryError || saveRunError) && (
+          <div className="rounded-md border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+            {saveRunError ?? runHistoryError}
+          </div>
+        )}
         <div className="rounded-lg border border-border bg-secondary/60 p-4">
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">Latest run</p>
           <p className="mt-2 font-serif text-xl">{latestRun?.routeName ?? "No run recorded yet"}</p>

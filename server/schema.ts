@@ -28,7 +28,21 @@ export const routes = michi.table("routes", {
   createdAt: timestamp("created_at").defaultNow()
 });
 
+export const runHistory = michi.table("run_history", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
+  routeName: varchar("route_name", { length: 255 }).notNull(),
+  distanceKm: decimal("distance_km", { precision: 5, scale: 2 }).notNull(),
+  targetDistanceKm: decimal("target_distance_km", { precision: 5, scale: 2 }).notNull(),
+  durationSeconds: integer("duration_seconds").notNull(),
+  pace: varchar("pace", { length: 32 }).notNull(),
+  completedAt: timestamp("completed_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow()
+});
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type SavedRoute = typeof routes.$inferSelect;
 export type NewSavedRoute = typeof routes.$inferInsert;
+export type RunHistory = typeof runHistory.$inferSelect;
+export type NewRunHistory = typeof runHistory.$inferInsert;
